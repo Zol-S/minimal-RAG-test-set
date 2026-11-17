@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-PDF Structure Discoverer
+PDF to Chunked CSV Exporter
 
-Usage:
-    python pdf_to_csv.py book.pdf -d  -o output_folder
+Accepts a PDF, detects chapters, extracts text per chapter, splits the text
+into chunks using langchain's RecursiveCharacterTextSplitter, and writes a CSV
+with columns:
 
-When the -d/--discover flag is passed, the script analyses the PDF and
-writes a CSV named <pdf_stem>_structure.csv containing:
+    source, chunks, chapter
 
-    title,page_start,page_end
+Usage examples:
+    python export_pdf_to_csv.py book.pdf -o output/
+    python export_pdf_to_csv.py book.pdf -o results/chunks.csv --chunk-size 500 --chunk-overlap 0
 """
 
 import re
@@ -21,99 +23,17 @@ try:
 except ImportError:
     raise SystemExit("PyMuPDF is required. Install it with:  pip install pymupdf")
 
-def safe_filename(title: str) -> str:
-    """
-    Convert a section title into a safe filename:
-    - lowercased
-    - spaces → _
-    - remove/replace characters that are illegal in filenames
-    """
-    name = title.lower().strip()
-    name = name.replace(" ", "_")
-    # Remove characters that are problematic in filenames
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", name)
-    # Collapse multiple underscores
-    name = re.sub(r"_+", "_", name)
-    return name.strip("_")
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    raise SystemExit(
+        "langchain-text-splitters is required. Install it with:\n"
+        "  pip install langchain-text-splitters"
+    )
 
-def extract_sections_from_structure(
-    structure_csv: Path,
-    pdf_path: Path,
-    output_dir: Path,
-) -> int:
-    """
-    Read a *_structure.csv file and extract the corresponding page ranges
-    from the PDF into individual text files.
-
-    Parameters
-    ----------
-    structure_csv : Path
-        Path to the CSV produced by the discover step
-        (columns: title, page_start, page_end)
-    pdf_path : Path
-        Path to the original PDF
-    output_dir : Path
-        Folder where the extracted .txt files will be written
-    """
-    if not structure_csv.exists():
-        raise FileNotFoundError(f"Structure CSV not found: {structure_csv}")
-    if not pdf_path.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Read the structure
-    with structure_csv.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        sections = list(reader)
-
-    if not sections:
-        print("No sections found in the CSV.")
-        return
-
-    doc = pymupdf.open(pdf_path)
-    total_pages = len(doc)
-    exported_files_count = 0
-
-    print(f"Extracting {len(sections)} sections from {pdf_path.name} …")
-
-    for sec in sections:
-        title = sec["title"].strip()
-        try:
-            page_start = int(sec["page_start"])
-            page_end = int(sec["page_end"])
-        except (KeyError, ValueError) as e:
-            print(f"  Skipping invalid row: {sec} ({e})")
-            continue
-
-        # Clamp to valid page range (1-based → 0-based)
-        start_idx = max(0, page_start - 1)
-        end_idx = min(total_pages - 1, page_end - 1)
-
-        if start_idx > end_idx:
-            print(f"  Skipping '{title}': invalid page range {page_start}-{page_end}")
-            continue
-
-        # Extract text from the page range
-        texts = []
-        for page_idx in range(start_idx, end_idx + 1):
-            texts.append(doc[page_idx].get_text("text"))
-
-        full_text = "\n".join(texts).strip()
-
-        # Build safe filename
-        filename = safe_filename(title) + ".txt"
-        out_path = output_dir / filename
-
-        out_path.write_text(full_text, encoding="utf-8")
-        print(f"  Saved: {out_path.name}  (pages {page_start}-{page_end})")
-        exported_files_count += 1
-
-    doc.close()
-    return exported_files_count
 
 # ----------------------------------------------------------------------
-# Detection patterns
+# Chapter detection
 # ----------------------------------------------------------------------
 CHAPTER_PATTERNS = [
     # CHAPTER 1  /  Chapter 1: Title  /  CHAPTER I
@@ -124,12 +44,6 @@ CHAPTER_PATTERNS = [
     r'^([IVXLCDM]+)[\.\:\-\s]+(.+)$',
 ]
 
-'''
-TOC_PATTERN = re.compile(
-    r'^(?:brief\s+)?(?:table\s+of\s+)?contents?$',
-    re.IGNORECASE
-)
-'''
 
 def detect_chapter(line: str):
     """Return (number, title) if the line looks like a chapter heading."""
@@ -144,9 +58,7 @@ def detect_chapter(line: str):
             return num, title
     return None
 
-# ----------------------------------------------------------------------
-# Core logic
-# ----------------------------------------------------------------------
+
 def discover_structure(pdf_path: Path):
     """
     Analyse the PDF and return a list of sections:
@@ -158,30 +70,15 @@ def discover_structure(pdf_path: Path):
     doc = pymupdf.open(pdf_path)
     total_pages = len(doc)
 
-    sections = []          # temporary list with only page_start
-    toc_found = False
-    seen_titles = set()    # avoid duplicates
+    sections = []
+    seen_titles = set()
 
     for page_idx in range(total_pages):
-        page_num = page_idx + 1          # 1-based
+        page_num = page_idx + 1  # 1-based
         text = doc[page_idx].get_text("text")
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
         for line in lines:
-            # ---- Table of Contents ----
-            '''if not toc_found and TOC_PATTERN.match(line):
-                title = "Table of Contents"
-                if title not in seen_titles:
-                    sections.append({
-                        "title": title,
-                        "page_start": page_num
-                    })
-                    seen_titles.add(title)
-                    toc_found = True
-                continue
-            '''
-
-            # ---- Chapters ----
             detected = detect_chapter(line)
             if detected:
                 num, raw_title = detected
@@ -190,12 +87,9 @@ def discover_structure(pdf_path: Path):
                 else:
                     title = f"Chapter {num}"
 
-                # Skip if we already recorded this exact title
                 if title in seen_titles:
                     continue
 
-                # Heuristic: ignore very late occurrences that are probably
-                # just mentions inside the text (optional safety)
                 sections.append({
                     "title": title,
                     "page_start": page_num
@@ -204,44 +98,133 @@ def discover_structure(pdf_path: Path):
 
     doc.close()
 
-    # ---- Compute page_end ----
+    # Compute page_end
     for i, sec in enumerate(sections):
         if i + 1 < len(sections):
             sec["page_end"] = sections[i + 1]["page_start"] - 1
         else:
             sec["page_end"] = total_pages
 
-        # Safety: never let page_end < page_start
         if sec["page_end"] < sec["page_start"]:
             sec["page_end"] = sec["page_start"]
 
     return sections
+
+
+# ----------------------------------------------------------------------
+# Text extraction & chunking
+# ----------------------------------------------------------------------
+def extract_text_for_range(doc, page_start: int, page_end: int) -> str:
+    """Extract plain text from a 1-based inclusive page range."""
+    total_pages = len(doc)
+    start_idx = max(0, page_start - 1)
+    end_idx = min(total_pages - 1, page_end - 1)
+
+    if start_idx > end_idx:
+        return ""
+
+    texts = []
+    for page_idx in range(start_idx, end_idx + 1):
+        texts.append(doc[page_idx].get_text("text"))
+    return "\n".join(texts).strip()
+
+
+def chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 0) -> list[str]:
+    """
+    Split text using langchain's RecursiveCharacterTextSplitter
+    with the requested separators and parameters.
+    """
+    if not text or not text.strip():
+        return []
+
+    splitter = RecursiveCharacterTextSplitter(
+        separators=[".\n", ". ", "!", "?"],
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    return splitter.split_text(text)
+
+
+def process_pdf(
+    pdf_path: Path,
+    chunk_size: int = 500,
+    chunk_overlap: int = 0,
+) -> list[dict]:
+    """
+    Detect chapters, extract text, chunk it, and return rows for CSV.
+    Each row is a dict with keys: source, chunks, chapter
+    """
+    source_name = pdf_path.name
+    sections = discover_structure(pdf_path)
+
+    doc = pymupdf.open(pdf_path)
+    rows = []
+
+    if not sections:
+        # Fallback: treat the whole document as a single chapter
+        print("No chapter headings detected – treating entire PDF as one section.")
+        full_text = extract_text_for_range(doc, 1, len(doc))
+        for chunk in chunk_text(full_text, chunk_size, chunk_overlap):
+            rows.append({
+                "source": source_name,
+                "chunks": chunk,
+                "chapter": "Full Document",
+            })
+    else:
+        print(f"Detected {len(sections)} chapter(s). Chunking…")
+        for sec in sections:
+            title = sec["title"]
+            page_start = sec["page_start"]
+            page_end = sec["page_end"]
+
+            text = extract_text_for_range(doc, page_start, page_end)
+            if not text:
+                print(f"  Skipping empty chapter: {title}")
+                continue
+
+            chapter_chunks = chunk_text(text, chunk_size, chunk_overlap)
+            print(f"  {title}: {len(chapter_chunks)} chunk(s)  (pages {page_start}-{page_end})")
+
+            for chunk in chapter_chunks:
+                rows.append({
+                    "source": source_name,
+                    "chunks": chunk,
+                    "chapter": title,
+                })
+
+    doc.close()
+    return rows
+
 
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Discover the structure (ToC + chapters) of a PDF"
+        description="Extract chapters from a PDF, chunk the text with "
+                    "RecursiveCharacterTextSplitter, and save as CSV "
+                    "(columns: source, chunks, chapter)"
     )
     parser.add_argument(
         "input_filename",
         help="Input PDF file"
     )
     parser.add_argument(
-        "-d", "--discover",
-        action="store_true",
-        help="Discovery mode reads the PDF and generates a CSV of its structure"
-    )
-    parser.add_argument(
-        "-e", "--extract",
-        action="store_true",
-        help="Extracts and converts the page from the input PDF based on what is specified in the structure CSV"
-    )
-    parser.add_argument(
-        "-o", "--output-dir",
+        "-o", "--output",
         required=True,
-        help="Folder where the structure CSV will be written"
+        help="Output CSV file path, or a directory (CSV will be named <pdf_stem>_chunks.csv)"
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=500,
+        help="Maximum characters per chunk (default: 500)"
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=0,
+        help="Character overlap between consecutive chunks (default: 0)"
     )
     args = parser.parse_args()
 
@@ -251,46 +234,39 @@ def main():
     if input_path.suffix.lower() != ".pdf":
         raise SystemExit("Input must be a PDF file.")
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if args.chunk_size < 50:
+        raise SystemExit("--chunk-size must be at least 50")
+    if args.chunk_overlap < 0 or args.chunk_overlap >= args.chunk_size:
+        raise SystemExit("--chunk-overlap must be >= 0 and < chunk-size")
 
-    if args.discover and args.extract:
-        parser.error("Pass only one mode: either discover or extract.")
+    output_arg = Path(args.output)
+    if output_arg.suffix.lower() == ".csv":
+        # User gave an explicit CSV path
+        csv_path = output_arg
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        # Treat as directory
+        output_arg.mkdir(parents=True, exist_ok=True)
+        csv_path = output_arg / f"{input_path.stem}_chunks.csv"
 
-    if not args.discover and not args.extract:
-        parser.error("Pass at least one mode: either discover or extract")
+    print(f"Processing {input_path.name} …")
+    rows = process_pdf(
+        pdf_path=input_path,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+    )
 
-    # Discover
-    if args.discover:
-        print(f"Analysing structure of {input_path.name} …")
-        sections = discover_structure(input_path)
+    if not rows:
+        print("No text could be extracted. Nothing written.")
+        return
 
-        if not sections:
-            print("No sections (ToC or chapters) were detected.")
-            return
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["source", "chunks", "chapter"])
+        writer.writeheader()
+        writer.writerows(rows)
 
-        csv_path = output_dir / f"{input_path.stem}_structure.csv"
+    print(f"\nWrote {len(rows)} chunk(s) → {csv_path}")
 
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["title", "page_start", "page_end"])
-            writer.writeheader()
-            for sec in sections:
-                writer.writerow(sec)
-
-        print(f"Found {len(sections)} sections")
-        print(f"Saved → {csv_path}")
-    
-    # Extract
-    if args.extract:
-        csv_path = output_dir / f"{input_path.stem}_structure.csv"
-
-        sections_exported = extract_sections_from_structure(
-            structure_csv=csv_path,
-            pdf_path=Path(args.input_filename),
-            output_dir=Path(args.output_dir),
-        )
-        
-        print(f"Number of sections exported: {sections_exported}")
 
 if __name__ == "__main__":
     main()
