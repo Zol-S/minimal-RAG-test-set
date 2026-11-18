@@ -65,6 +65,45 @@ py generate_qa_set.py --input path/to/chunks.csv \
   --llm-entry claude_5_5
 ```
 
+### 4. Send the generated questions to the agent
+The output should be saved as CSV and should have the following columns appended to the input CSV:
+
+| Column | Description |
+|--------|-------------|
+| `agent` | Name of the agent for identification |
+| `generation_answer` | The answer outputted by the agent |
+| `generation_chunks` | All the chunks returned by the retriever |
+| `generation_llm_calls` | Number of LLM calls |
+| `generation_input_tokens` | Total number of input tokens |
+| `generation_output_tokens` | Total number of output tokens |
+| `generation_latency_s` | Generation latency (s) |
+
+### 5. Evaluate the output
+The script calculates the following metrics for the input CSV
+
+| Category | Metrics | Library / method |
+| --- | --- | --- |
+| Retrieval ranking | MRR, MAP, NDCG@1/3/5/10, MAP@k | Ranx (relevance via token-overlap heuristic against gold chunks / answer) |
+| Lexical generation | BLEU, CHRF, ROUGE-L | Built-in implementations (always available) |
+| RAGAS | Context Precision, Context Recall, Context Entity Recall, Context Relevance, Faithfulness, Answer/Response Relevancy, Answer Accuracy, Factual Correctness, Response Groundedness, Noise Sensitivity, Semantic Similarity, BLEU/CHRF/ROUGE (RAGAS versions) | RAGAS (LLM-based ones need an API key) |
+
+```bash
+python evaluate_rag_metrics.py \
+  -i questions_with_answers.csv \
+  --llm-config llm.yaml \
+  --llm-entry claude_5_5
+
+# Override model, still use key from config
+python evaluate_rag_metrics.py \
+  -i questions_with_answers.csv \
+  --llm-config llm.yaml \
+  --llm-entry claude_5_5 \
+  --model anthropic/claude-3-5-sonnet
+
+# Quick test on first N rows
+python evaluate_rag_metrics.py -i input.csv -o out.csv --limit 5 --no-llm
+```
+
 ---
 
 ## 🛠️ Scripts & CLI arguments
