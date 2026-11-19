@@ -6,3 +6,6 @@ tqdm>=4.65
 litellm>=1.0
 pymupdf
 langchain-text-splitters
+rapidfuzz
+rouge_score
+sacrebleu
