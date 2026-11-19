@@ -14,7 +14,7 @@ CSV columns:
 Example invocation:
 python -m export_faiss_to_csv
     --source faiss
-    --kb-dir C:\Users\Zol\Documents\agent-harness-comparison\kb\44d5fde8e5
+    --kb-dir ../kb/44d5fde8e5
     --output ../data/knowledge_base_export/faiss_export.csv
 """
 

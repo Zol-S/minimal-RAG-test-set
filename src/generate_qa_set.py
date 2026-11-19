@@ -634,8 +634,7 @@ def main() -> int:
 
     # Build a clean filename
     source = pdf_all.loc[0, 'source']
-    timestamp = time.strftime("%Y%m%d%H%M")
-    out_file = out_dir / f"qa_set_{source}_{timestamp}.csv"
+    out_file = out_dir / f"qa_set_{source}.csv"
 
     cols = [
         "type",
@@ -651,10 +650,11 @@ def main() -> int:
     ]
     # Keep only columns that exist (in case generation was skipped)
     cols = [c for c in cols if c in pdf_all.columns]
-    pdf_all[cols].to_csv(out_file, index=False)
+    
+    from Helper import Log
+    with Log.save_file(out_file) as filename:
+        pdf_all[cols].to_csv(filename, sep=",", index=False)
 
-    size_kb = out_file.stat().st_size / 1024
-    print(f"\nSaved → {out_file} ({size_kb:.1f} KB)")
     return 0
 
 

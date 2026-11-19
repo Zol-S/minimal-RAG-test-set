@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-PDF to Chunked CSV Exporter
+PDF to Chunked CSV/TSV Exporter
 
 Accepts a PDF, detects chapters, extracts text per chapter, splits the text
-into chunks using langchain's RecursiveCharacterTextSplitter, and writes a CSV
-with columns:
+into chunks using langchain's RecursiveCharacterTextSplitter, and writes a
+tab-separated file (with timestamped filename via Log.save_file) with columns:
 
     source, chunks, chapter
 
@@ -14,7 +14,6 @@ Usage examples:
 """
 
 import re
-import csv
 import argparse
 from pathlib import Path
 
@@ -30,6 +29,13 @@ except ImportError:
         "langchain-text-splitters is required. Install it with:\n"
         "  pip install langchain-text-splitters"
     )
+
+try:
+    import pandas as pd
+except ImportError:
+    raise SystemExit("pandas is required. Install it with:  pip install pandas")
+
+from Helper import Log
 
 
 # ----------------------------------------------------------------------
@@ -202,8 +208,8 @@ def process_pdf(
 def main():
     parser = argparse.ArgumentParser(
         description="Extract chapters from a PDF, chunk the text with "
-                    "RecursiveCharacterTextSplitter, and save as CSV "
-                    "(columns: source, chunks, chapter)"
+                    "RecursiveCharacterTextSplitter, and save as TSV "
+                    "(columns: source, chunks, chapter) using Log.save_file"
     )
     parser.add_argument(
         "input_filename",
@@ -212,7 +218,9 @@ def main():
     parser.add_argument(
         "-o", "--output",
         required=True,
-        help="Output CSV file path, or a directory (CSV will be named <pdf_stem>_chunks.csv)"
+        help="Output file path (or directory). A timestamp will be added to the "
+             "filename via Log.save_file; if a directory is given the base name "
+             "will be <pdf_stem>_chunks.csv"
     )
     parser.add_argument(
         "--chunk-size",
@@ -260,13 +268,12 @@ def main():
         print("No text could be extracted. Nothing written.")
         return
 
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["source", "chunks", "chapter"])
-        writer.writeheader()
-        writer.writerows(rows)
+    pdf_data = pd.DataFrame(rows)
 
-    print(f"\nWrote {len(rows)} chunk(s) → {csv_path}")
+    with Log.save_file(csv_path) as filename:
+        pdf_data.to_csv(filename, sep=",", index=False)
 
+    print(f"\nWrote {len(rows)} chunk(s)")
 
 if __name__ == "__main__":
     main()

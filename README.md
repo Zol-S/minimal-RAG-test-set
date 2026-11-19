@@ -11,22 +11,12 @@ The relevant paper is available here *(link to be added)*.
 ## ⚙️ Installation
 
 ```bash
-pip install -r requirements.txt
+uv add -r requirements.txt
 ```
 
 Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `litellm`, `faiss-cpu` (or `faiss-gpu`), `pydantic`, `tqdm`, and `pyyaml`.
 
 **Evaluation extras** (optional, depending on which metrics you need):
-
-```bash
-# LLM-based RAGAS evaluation
-pip install ragas openai pyyaml tqdm
-
-# No-LLM evaluation (ranking + lexical)
-pip install ranx nltk
-# optional: RAGAS non-LLM metrics + semantic similarity
-pip install ragas datasets sentence-transformers
-```
 
 ---
 
@@ -59,19 +49,19 @@ There are several connectors implemented:
 **Example – PDF to CSV export:**
 
 ```bash
-py export_pdf_to_csv.py ../data/Laudon_MIS_17th.pdf --output ../data/export/laudon_export.csv --chunk-size 300 --chunk-overlap 0
+uv run python export_pdf_to_csv.py ../data/Laudon_MIS_17th.pdf --output ../data/export/laudon_export.csv --chunk-size 300 --chunk-overlap 0
 ```
 
 **Example – FAISS to CSV export:**
 
 ```bash
-py export_faiss_to_csv.py --source faiss --kb-dir ..\..\agent-harness-comparison\kb\44d5fde8e5 --output ../data/export/faiss_export.csv
+uv run python export_faiss_to_csv.py --source faiss --kb-dir ..\..\agent-harness-comparison\kb\44d5fde8e5 --output ../data/export/faiss_export.csv
 ```
 
 ### 3. Sample from exported chunks and generate questions
 
 ```bash
-py generate_qa_set.py --input path/to/chunks.csv \
+uv run python generate_qa_set.py --input path/to/chunks.csv \
   --output-dir ./output \
   --num-entries 10 \
   --llm-config configs/llm.yaml \
@@ -107,13 +97,13 @@ Two evaluation scripts are provided:
 #### LLM-based evaluation (`evaluate_rag_metrics.py`)
 
 ```bash
-python evaluate_rag_metrics.py \
+uv run python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
   --llm-config llm.yaml \
   --llm-entry claude_5_5
 
 # Custom output path + limit to first 5 rows
-python evaluate_rag_metrics.py \
+uv run python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
   -o scored.csv \
   --llm-config llm.yaml \
@@ -121,7 +111,7 @@ python evaluate_rag_metrics.py \
   --limit 5
 
 # Use a different embedding model for Answer Relevancy
-python evaluate_rag_metrics.py \
+uv run python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
   --llm-config llm.yaml \
   --embedding-model text-embedding-3-large
@@ -132,19 +122,19 @@ Scores are written as new columns; default output is `<input>_scored.csv`.
 #### No-LLM evaluation (`evaluate_rag_metrics_nollm.py`)
 
 ```bash
-python evaluate_rag_metrics_nollm.py -i questions_with_answers.csv
+uv run python evaluate_rag_metrics_nollm.py -i questions_with_answers.csv
 
 # Limit + custom output
-python evaluate_rag_metrics_nollm.py -i input.csv -o metrics.csv --limit 20
+uv run python evaluate_rag_metrics_nollm.py -i input.csv -o metrics.csv --limit 20
 
 # Skip ranking metrics
-python evaluate_rag_metrics_nollm.py -i input.csv --no-ranking
+uv run python evaluate_rag_metrics_nollm.py -i input.csv --no-ranking
 
 # Adjust relevance threshold used to build qrels
-python evaluate_rag_metrics_nollm.py -i input.csv --relevance-threshold 0.3
+uv run python evaluate_rag_metrics_nollm.py -i input.csv --relevance-threshold 0.3
 
 # Skip RAGAS batch metrics entirely
-python evaluate_rag_metrics_nollm.py -i input.csv --no-ragas
+uv run python evaluate_rag_metrics_nollm.py -i input.csv --no-ragas
 ```
 
 Default output is `<input>_nollm.csv` plus a companion `<input>_nollm.summary.json`.

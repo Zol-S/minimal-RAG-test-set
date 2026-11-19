@@ -586,11 +586,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     original_cols = [c for c in df.columns if c not in metric_cols]
     out_df = df[original_cols + metric_cols].copy()
 
-    out_df.to_csv(out_path, index=False, quoting=1)  # QUOTE_ALL
-    print(
-        f"[info] Wrote detailed results "
-        f"({len(out_df)} rows, {len(out_df.columns)} cols) → {out_path}"
-    )
+    from Helper import Log
+    with Log.save_file(out_path) as filename:
+        out_df.to_csv(filename, index=False, quoting=1)  # QUOTE_ALL
 
     summary_path = out_path.with_suffix(".summary.json")
     full_summary = {

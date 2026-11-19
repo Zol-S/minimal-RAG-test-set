@@ -389,8 +389,10 @@ async def main() -> None:
         out_path = in_path.with_name(f"{in_path.stem}_scored{in_path.suffix}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_df.to_csv(out_path, index=False)
-    print(f"Saved scored CSV to: {out_path}")
+    
+    from Helper import Log
+    with Log.save_file(out_path) as filename:
+        raw_df.to_csv(filename, index=False)
 
     # Quick summary
     print("\nScore summary (mean over non-null):")
