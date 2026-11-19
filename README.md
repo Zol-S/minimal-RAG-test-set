@@ -16,6 +16,18 @@ pip install -r requirements.txt
 
 Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `litellm`, `faiss-cpu` (or `faiss-gpu`), `pydantic`, `tqdm`, and `pyyaml`.
 
+**Evaluation extras** (optional, depending on which metrics you need):
+
+```bash
+# LLM-based RAGAS evaluation
+pip install ragas openai pyyaml tqdm
+
+# No-LLM evaluation (ranking + lexical)
+pip install ranx nltk
+# optional: RAGAS non-LLM metrics + semantic similarity
+pip install ragas datasets sentence-transformers
+```
+
 ---
 
 ## 🎯 What it does
@@ -23,6 +35,7 @@ Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `lite
 1. **Extract & chunk** text from different sources and save it as a standardized CSV.
 2. **Sample** the chunks according to several failure-mode strategies (basic, multi-hop, negative/unsupported, complexity).
 3. **Generate** question–answer pairs with an LLM (optional) that can later be used to test RAG systems.
+4. **Evaluate** agent answers with either LLM-based RAGAS metrics or a fully offline (no-LLM) suite of ranking + lexical metrics.
 
 ---
 
@@ -66,26 +79,32 @@ py generate_qa_set.py --input path/to/chunks.csv \
 ```
 
 ### 4. Send the generated questions to the agent
+
 The output should be saved as CSV and should have the following columns appended to the input CSV:
 
 | Column | Description |
 |--------|-------------|
 | `agent` | Name of the agent for identification |
 | `generation_answer` | The answer outputted by the agent |
-| `generation_chunks` | All the chunks returned by the retriever |
+| `generation_chunks` | All the chunks returned by the retriever (list of dicts with at least `text` and preferably `score` / `chunk_id`) |
 | `generation_llm_calls` | Number of LLM calls |
 | `generation_input_tokens` | Total number of input tokens |
 | `generation_output_tokens` | Total number of output tokens |
 | `generation_latency_s` | Generation latency (s) |
 
 ### 5. Evaluate the output
-The script calculates the following metrics for the input CSV
 
-| Category | Metrics | Library / method |
-| --- | --- | --- |
-| Retrieval ranking | MRR, MAP, NDCG@1/3/5/10, MAP@k | Ranx (relevance via token-overlap heuristic against gold chunks / answer) |
-| Lexical generation | BLEU, CHRF, ROUGE-L | Built-in implementations (always available) |
-| RAGAS | Context Precision, Context Recall, Context Entity Recall, Context Relevance, Faithfulness, Answer/Response Relevancy, Answer Accuracy, Factual Correctness, Response Groundedness, Noise Sensitivity, Semantic Similarity, BLEU/CHRF/ROUGE (RAGAS versions) | RAGAS (LLM-based ones need an API key) |
+Two evaluation scripts are provided:
+
+| Script | Requires LLM? | Main metrics |
+|--------|---------------|--------------|
+| `evaluate_rag_metrics.py` | Yes (OpenAI-compatible) | RAGAS collections: Context Precision/Recall, Faithfulness, Answer Relevancy, Answer Accuracy, Factual Correctness, … + BLEU/CHRF/ROUGE |
+| `evaluate_rag_metrics_nollm.py` | No | Per-row BLEU / CHRF / ROUGE-L, Ranx ranking (MRR, MAP, NDCG@k), optional non-LLM RAGAS scores |
+
+**Required columns for both scripts:** `question`, `answer`, `generation_answer`, `generation_chunks`.  
+(`chunks` is optional but used by the no-LLM script for relevance judgments.)
+
+#### LLM-based evaluation (`evaluate_rag_metrics.py`)
 
 ```bash
 python evaluate_rag_metrics.py \
@@ -93,16 +112,42 @@ python evaluate_rag_metrics.py \
   --llm-config llm.yaml \
   --llm-entry claude_5_5
 
-# Override model, still use key from config
+# Custom output path + limit to first 5 rows
+python evaluate_rag_metrics.py \
+  -i questions_with_answers.csv \
+  -o scored.csv \
+  --llm-config llm.yaml \
+  --llm-entry claude_5_5 \
+  --limit 5
+
+# Use a different embedding model for Answer Relevancy
 python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
   --llm-config llm.yaml \
-  --llm-entry claude_5_5 \
-  --model anthropic/claude-3-5-sonnet
-
-# Quick test on first N rows
-python evaluate_rag_metrics.py -i input.csv -o out.csv --limit 5 --no-llm
+  --embedding-model text-embedding-3-large
 ```
+
+Scores are written as new columns; default output is `<input>_scored.csv`.
+
+#### No-LLM evaluation (`evaluate_rag_metrics_nollm.py`)
+
+```bash
+python evaluate_rag_metrics_nollm.py -i questions_with_answers.csv
+
+# Limit + custom output
+python evaluate_rag_metrics_nollm.py -i input.csv -o metrics.csv --limit 20
+
+# Skip ranking metrics
+python evaluate_rag_metrics_nollm.py -i input.csv --no-ranking
+
+# Adjust relevance threshold used to build qrels
+python evaluate_rag_metrics_nollm.py -i input.csv --relevance-threshold 0.3
+
+# Skip RAGAS batch metrics entirely
+python evaluate_rag_metrics_nollm.py -i input.csv --no-ragas
+```
+
+Default output is `<input>_nollm.csv` plus a companion `<input>_nollm.summary.json`.
 
 ---
 
@@ -168,6 +213,72 @@ Performs stratified sampling for four failure-mode types and (optionally) calls 
 
 ---
 
+### 📊 `evaluate_rag_metrics.py` (LLM-based RAGAS)
+
+Evaluates agent outputs with the Ragas **collections** API. Metrics are computed **per row** and attached as new columns.
+
+**Metrics computed**
+
+| Metric column | Description |
+|---------------|-------------|
+| `context_precision` | Context Precision |
+| `context_recall` | Context Recall |
+| `context_entities_recall` | Context Entity Recall |
+| `noise_sensitivity` | Noise Sensitivity |
+| `response_relevancy` | Answer / Response Relevancy (needs embeddings) |
+| `faithfulness` | Faithfulness |
+| `answer_accuracy` | Answer Accuracy |
+| `context_relevance` | Context Relevance |
+| `response_groundedness` | Response Groundedness |
+| `factual_correctness` | Factual Correctness |
+| `nonllm_string_similarity` | Non-LLM string similarity (Levenshtein) |
+| `bleu` | BLEU |
+| `chrf` | CHRF |
+| `rouge` | ROUGE |
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `-i`, `--input` | ✅ | — | Path to the input CSV to evaluate. |
+| `-o`, `--output` | | `<input>_scored.csv` | Path for the output CSV. |
+| `--llm-config` | | `None` | Path to `llm_config.yaml` (provider + API key + model). |
+| `--llm-entry` | | `claude_5_5` | Key inside the YAML config that selects the model / API key. |
+| `--embedding-model` | | `text-embedding-3-small` | OpenAI embedding model used by Response Relevancy. |
+| `--limit` | | `None` | Only evaluate the first N rows (useful for dry-runs). |
+
+**Notes**
+- Required columns: `question`, `generation_chunks`, `generation_answer`, `answer`.
+- `generation_chunks` is expected to be a stringified list of dicts containing at least a `text` field (and optionally `score`).
+- The script creates an OpenAI-compatible client via `ragas.llms.llm_factory` / `embedding_factory`. API keys are taken from the YAML config (or from the usual environment variables).
+- A mean summary of every metric is printed at the end.
+
+---
+
+### 📉 `evaluate_rag_metrics_nollm.py` (no-LLM)
+
+Fully offline evaluation suite. Computes:
+
+1. **Per-row lexical metrics** – BLEU, CHRF, ROUGE-L (always available; NLTK used when present).
+2. **Ranking metrics** (via Ranx) – MRR, MAP, NDCG@1/3/5/10, MAP@k. Relevance judgments are built with a simple token-overlap heuristic against the gold `chunks` / `answer`.
+3. **Optional non-LLM RAGAS metrics** – BleuScore, CHRFScore, RougeScore, and SemanticSimilarity (when `sentence-transformers` is installed).
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `-i`, `--input` | ✅ | — | Input CSV (must contain `question`, `answer`, `generation_answer`, `generation_chunks`). |
+| `-o`, `--output` | | `<input>_nollm.csv` | Output CSV path. |
+| `--limit` | | `None` | Evaluate only the first N rows. |
+| `--metrics` | | all available | Subset of RAGAS metrics to run (e.g. `bleu_score chrf_score rouge_score semantic_similarity`). |
+| `--relevance-threshold` | | `0.25` | Token-overlap threshold used to build qrels for ranking metrics. |
+| `--no-ranking` | | `False` | Skip ranking metrics (MRR / NDCG / MAP). |
+| `--no-ragas` | | `False` | Skip RAGAS batch metrics. |
+
+**Notes**
+- Optional column `chunks` (gold context) improves the quality of the relevance judgments used for ranking metrics.
+- Ranking metrics are written as constant columns (`corpus_mrr`, `corpus_ndcg@5`, …) so every row carries the corpus-level score.
+- A JSON summary (`*.summary.json`) with means and ranking/RAGAS aggregates is written next to the CSV.
+- Graceful degradation: missing optional packages (`ranx`, `ragas`, `nltk`, `sentence-transformers`) simply disable the corresponding metric groups.
+
+---
+
 ## 📊 CSV schemas
 
 ### Input CSV schema (required by `generate_qa_set.py`)
@@ -193,15 +304,26 @@ Performs stratified sampling for four failure-mode types and (optionally) calls 
 | `output_token_count` | Completion tokens |
 | `elapsed_time`       | Seconds taken by the LLM call |
 
+### Evaluation input schema (both `evaluate_*.py` scripts)
+
+| Column | Description |
+|--------|-------------|
+| `question` | User question |
+| `answer` | Gold / reference answer |
+| `generation_answer` | Answer produced by the RAG agent |
+| `generation_chunks` | Retrieved chunks (stringified list of dicts with `text`, optionally `score` / `chunk_id`) |
+| `chunks` | *(optional)* Gold context text used for ranking relevance judgments |
+
 ---
 
 ## 📝 Notes
 
 - For the `information_integration` type the two sampled chunks are joined with `|` before being sent to the LLM.
 - The negative-prompt explicitly instructs the model to produce questions that **cannot** be answered from the given context (the expected answer should be a rejection / “insufficient information”).
-- API keys are read from the YAML config (or from the usual environment variables that LiteLLM respects).
+- API keys are read from the YAML config (or from the usual environment variables that LiteLLM / OpenAI clients respect).
 - Sampling strategies:
   - **basic** – stratified by chapter
   - **information_integration** – pairs of chunks (multi-hop)
   - **negative_unsupported_questions** – questions whose answers are deliberately absent
   - **complexity** – focuses on harder-to-read passages
+- Ranking relevance in the no-LLM evaluator is a heuristic (token overlap ≥ threshold with gold context or gold answer). Adjust `--relevance-threshold` if the default is too strict or too lenient for your data.
