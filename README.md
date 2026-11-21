@@ -18,6 +18,12 @@ Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `lite
 
 **Evaluation extras** (optional, depending on which metrics you need):
 
+**Visualization extras** (for the Streamlit dashboard):
+
+```bash
+uv add streamlit plotly statsmodels
+```
+
 ---
 
 ## 🎯 What it does
@@ -26,6 +32,7 @@ Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `lite
 2. **Sample** the chunks according to several failure-mode strategies (basic, multi-hop, negative/unsupported, complexity).
 3. **Generate** question–answer pairs with an LLM (optional) that can later be used to test RAG systems.
 4. **Evaluate** agent answers with either LLM-based RAGAS metrics or a fully offline (no-LLM) suite of ranking + lexical metrics.
+5. **Visualize** the evaluation results in an interactive Streamlit dashboard (`metric_visualizer.py`).
 
 ---
 
@@ -138,6 +145,45 @@ uv run python evaluate_rag_metrics_nollm.py -i input.csv --no-ragas
 ```
 
 Default output is `<input>_nollm.csv` plus a companion `<input>_nollm.summary.json`.
+
+### 6. Visualize metrics (`metric_visualizer.py`)
+
+Interactive Streamlit dashboard that loads the two evaluation CSVs produced in step 5 and provides multi-tab analysis of generation cost, LLM-as-a-Judge scores, and offline lexical / ranking metrics.
+
+**Launch**
+
+```bash
+uv run streamlit run metric_visualizer.py
+```
+
+**Expected input files**
+
+The dashboard currently loads two CSVs (edit the paths inside `load_data()` if your files live elsewhere):
+
+| File | Produced by | Typical name |
+|------|-------------|--------------|
+| LLM-as-a-Judge scores | `evaluate_rag_metrics.py` | `*_scored.csv` / `laudon_evaluated.csv` |
+| No-LLM metrics | `evaluate_rag_metrics_nollm.py` | `*_nollm.csv` / `laudon_evaluated_nollm.csv` |
+
+Both files must share the same question rows (same order / same `type` stratification) so that side-by-side comparisons are meaningful.
+
+**Dashboard capabilities**
+
+| Tab | What you can explore |
+|-----|----------------------|
+| **Overview by Type** | Mean / median tables and bar charts for generation cost & latency broken down by failure-mode type (`basic`, `complexity`, `information_integration`, `negative_unsupported_questions`) |
+| **Generation Metrics** | Box plots of token counts, scatter of latency vs. input tokens (bubble size = # LLM calls), normalized line chart comparing mean generation metrics across types |
+| **LLM-as-a-Judge** | Heatmap of mean scores, radar chart, and per-metric bar charts for Context Precision/Recall, Faithfulness, Answer Accuracy, Response Relevancy, Factual Correctness, etc. Also includes the string-similarity columns written by the LLM evaluator (`bleu`, `chrf`, `rouge`, `nonllm_string_similarity`) |
+| **Non-LLM Metrics** | Per-row BLEU / CHRF / ROUGE-L distributions + corpus-level ranking metrics (MRR, MAP, nDCG@1/3/5/10, MAP@k) shown as a constant bar chart |
+| **Side-by-Side Comparison** | Correlation matrix between LLM-judge scores and non-LLM string metrics; scatter of non-LLM BLEU vs. LLM Answer Accuracy with OLS trendline; mean-score comparison table |
+| **Data Explorer** | Filterable raw tables of either CSV (question, generated answer, key scores) |
+
+**Sidebar controls**
+
+- Multi-select filter for question types
+- Toggle to show the full raw DataFrames
+
+**Key aggregates** (always visible at the top): number of questions, average input/output tokens, average generation latency, average number of LLM calls.
 
 ---
 
@@ -266,6 +312,22 @@ Fully offline evaluation suite. Computes:
 - Ranking metrics are written as constant columns (`corpus_mrr`, `corpus_ndcg@5`, …) so every row carries the corpus-level score.
 - A JSON summary (`*.summary.json`) with means and ranking/RAGAS aggregates is written next to the CSV.
 - Graceful degradation: missing optional packages (`ranx`, `ragas`, `nltk`, `sentence-transformers`) simply disable the corresponding metric groups.
+
+---
+
+### 📊 `metric_visualizer.py` (Streamlit dashboard)
+
+Interactive multi-tab dashboard for exploring the CSVs produced by the two evaluation scripts.
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| *(none)* | — | — | Launch with `uv run streamlit run metric_visualizer.py`. Data paths are configured inside `load_data()`. |
+
+**Notes**
+- Expects both the LLM-scored CSV and the no-LLM CSV (same questions, same order).
+- Sidebar lets you filter by failure-mode type and toggle full raw tables.
+- Uses Plotly for interactive charts (hover, zoom, export). `statsmodels` is required only for the OLS trendline on the Side-by-Side tab.
+- See [§6 Visualize metrics](#6-visualize-metrics-metric_visualizerpy) for a full feature overview.
 
 ---
 
