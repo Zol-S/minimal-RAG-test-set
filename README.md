@@ -18,10 +18,14 @@ Main dependencies include `pymupdf`, `langchain-text-splitters`, `pandas`, `lite
 
 **Evaluation extras** (optional, depending on which metrics you need):
 
+```bash
+uv add ragas datasets openai tiktoken ranx nltk sentence-transformers
+```
+
 **Visualization extras** (for the Streamlit dashboard):
 
 ```bash
-uv add streamlit plotly statsmodels
+uv add streamlit plotly
 ```
 
 ---
@@ -29,10 +33,10 @@ uv add streamlit plotly statsmodels
 ## 🎯 What it does
 
 1. **Extract & chunk** text from different sources and save it as a standardized CSV.
-2. **Sample** the chunks according to several failure-mode strategies (basic, multi-hop, negative/unsupported, complexity).
+2. **Sample** the chunks according to several failure-mode strategies (single-hop, multi-hop, negative/unsupported, linguistic complexity, document maximization, cross-section synthesis, ambiguous, terminological variation).
 3. **Generate** question–answer pairs with an LLM (optional) that can later be used to test RAG systems.
-4. **Evaluate** agent answers with either LLM-based RAGAS metrics or a fully offline (no-LLM) suite of ranking + lexical metrics.
-5. **Visualize** the evaluation results in an interactive Streamlit dashboard (`metric_visualizer.py`).
+4. **Evaluate** agent answers with a **unified** evaluator that produces both LLM-based RAGAS metrics and offline lexical / ranking metrics in a single CSV.
+5. **Visualize** the evaluation results in an interactive Streamlit dashboard (`metric_visualizer.py`) with category health scores.
 
 ---
 
@@ -62,7 +66,7 @@ uv run python export_pdf_to_csv.py ../data/Laudon_MIS_17th.pdf --output ../data/
 **Example – FAISS to CSV export:**
 
 ```bash
-uv run python export_faiss_to_csv.py --source faiss --kb-dir ..\..\agent-harness-comparison\kb\44d5fde8e5 --output ../data/export/faiss_export.csv
+uv run python export_faiss_to_csv.py --source faiss --kb-dir ../../agent-harness-comparison/kb/44d5fde8e5 --output ../data/export/faiss_export.csv
 ```
 
 ### 3. Sample from exported chunks and generate questions
@@ -91,19 +95,19 @@ The output should be saved as CSV and should have the following columns appended
 
 ### 5. Evaluate the output
 
-Two evaluation scripts are provided:
+A **single unified script** (`evaluate_rag_metrics.py`) computes both LLM-based and no-LLM metrics and writes them into one CSV.
 
-| Script | Requires LLM? | Main metrics |
-|--------|---------------|--------------|
-| `evaluate_rag_metrics.py` | Yes (OpenAI-compatible) | RAGAS collections: Context Precision/Recall, Faithfulness, Answer Relevancy, Answer Accuracy, Factual Correctness, … + BLEU/CHRF/ROUGE |
-| `evaluate_rag_metrics_nollm.py` | No | Per-row BLEU / CHRF / ROUGE-L, Ranx ranking (MRR, MAP, NDCG@k), optional non-LLM RAGAS scores |
+| Mode | Flag | Metrics |
+|------|------|---------|
+| LLM + lexical + ranking | default (with `--llm-config`) | RAGAS collections (Context Precision/Recall, Faithfulness, Answer Accuracy, …) + BLEU/CHRF/ROUGE + Ranx ranking |
+| Lexical + ranking only | `--no-llm` | Per-row BLEU / CHRF / ROUGE-L + corpus MRR / MAP / nDCG@k |
+| Lexical only | `--no-llm --no-ranking` | BLEU / CHRF / ROUGE-L |
 
-**Required columns for both scripts:** `question`, `answer`, `generation_answer`, `generation_chunks`.  
-(`chunks` is optional but used by the no-LLM script for relevance judgments.)
-
-#### LLM-based evaluation (`evaluate_rag_metrics.py`)
+**Required columns:** `question`, `answer`, `generation_answer`, `generation_chunks`.  
+(`chunks` is optional but improves ranking relevance judgments.)
 
 ```bash
+# Full evaluation (LLM + lexical + ranking)
 uv run python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
   --llm-config llm.yaml \
@@ -117,71 +121,69 @@ uv run python evaluate_rag_metrics.py \
   --llm-entry claude_5_5 \
   --limit 5
 
-# Use a different embedding model for Answer Relevancy
+# Offline only (no LLM calls)
 uv run python evaluate_rag_metrics.py \
   -i questions_with_answers.csv \
-  --llm-config llm.yaml \
-  --embedding-model text-embedding-3-large
-```
-
-Scores are written as new columns; default output is `<input>_scored.csv`.
-
-#### No-LLM evaluation (`evaluate_rag_metrics_nollm.py`)
-
-```bash
-uv run python evaluate_rag_metrics_nollm.py -i questions_with_answers.csv
-
-# Limit + custom output
-uv run python evaluate_rag_metrics_nollm.py -i input.csv -o metrics.csv --limit 20
+  --no-llm
 
 # Skip ranking metrics
-uv run python evaluate_rag_metrics_nollm.py -i input.csv --no-ranking
-
-# Adjust relevance threshold used to build qrels
-uv run python evaluate_rag_metrics_nollm.py -i input.csv --relevance-threshold 0.3
-
-# Skip RAGAS batch metrics entirely
-uv run python evaluate_rag_metrics_nollm.py -i input.csv --no-ragas
+uv run python evaluate_rag_metrics.py \
+  -i questions_with_answers.csv \
+  --no-llm --no-ranking
 ```
 
-Default output is `<input>_nollm.csv` plus a companion `<input>_nollm.summary.json`.
+Default output is `<input>_all_metrics.csv` plus a companion `<input>_all_metrics.summary.json`.
+
+Every metric also records companion columns:
+
+- `<metric>_latency_ms`
+- `<metric>_input_tokens`
+- `<metric>_output_tokens`
 
 ### 6. Visualize metrics (`metric_visualizer.py`)
 
-Interactive Streamlit dashboard that loads the two evaluation CSVs produced in step 5 and provides multi-tab analysis of generation cost, LLM-as-a-Judge scores, and offline lexical / ranking metrics.
+Interactive Streamlit dashboard that loads the **unified evaluation CSV** produced in step 5 and provides multi-tab analysis with **category health scores**.
 
 **Launch**
 
 ```bash
+# Pass the evaluation CSV as a CLI argument
+uv run streamlit run metric_visualizer.py -- --csv path/to/scored.csv
+
+# Or open the app and type the path in the sidebar
 uv run streamlit run metric_visualizer.py
 ```
 
-**Expected input files**
+**Expected input**
 
-The dashboard currently loads two CSVs (edit the paths inside `load_data()` if your files live elsewhere):
+A single CSV produced by `evaluate_rag_metrics.py` containing the original question columns plus the metric columns listed below.
 
-| File | Produced by | Typical name |
-|------|-------------|--------------|
-| LLM-as-a-Judge scores | `evaluate_rag_metrics.py` | `*_scored.csv` / `laudon_evaluated.csv` |
-| No-LLM metrics | `evaluate_rag_metrics_nollm.py` | `*_nollm.csv` / `laudon_evaluated_nollm.csv` |
+**Health scores (top of dashboard)**
 
-Both files must share the same question rows (same order / same `type` stratification) so that side-by-side comparisons are meaningful.
+| Category | Metrics averaged (higher = healthier) |
+|----------|----------------------------------------|
+| **Retrieval** | `context_precision`, `context_recall`, `context_entities_recall`, `context_relevance`, `corpus_mrr`, `corpus_map`, `corpus_map@k`, `corpus_ndcg@k` |
+| **Generation** | `faithfulness`, `response_groundedness`, `answer_accuracy`, `factual_correctness`, `metric_bleu` / `ragas_bleu`, `metric_chrf` / `ragas_chrf`, `metric_rouge_l` / `ragas_rouge` |
+| **End-to-end** | `noise_sensitivity` *(inverted)*, `response_relevancy`, `nonllm_string_similarity` |
 
-**Dashboard capabilities**
+`noise_sensitivity` is inverted (`1 − score`) so that a higher health score always means better behaviour.
+
+**Dashboard tabs**
 
 | Tab | What you can explore |
 |-----|----------------------|
-| **Overview by Type** | Mean / median tables and bar charts for generation cost & latency broken down by failure-mode type (`basic`, `complexity`, `information_integration`, `negative_unsupported_questions`) |
-| **Generation Metrics** | Box plots of token counts, scatter of latency vs. input tokens (bubble size = # LLM calls), normalized line chart comparing mean generation metrics across types |
-| **LLM-as-a-Judge** | Heatmap of mean scores, radar chart, and per-metric bar charts for Context Precision/Recall, Faithfulness, Answer Accuracy, Response Relevancy, Factual Correctness, etc. Also includes the string-similarity columns written by the LLM evaluator (`bleu`, `chrf`, `rouge`, `nonllm_string_similarity`) |
-| **Non-LLM Metrics** | Per-row BLEU / CHRF / ROUGE-L distributions + corpus-level ranking metrics (MRR, MAP, nDCG@1/3/5/10, MAP@k) shown as a constant bar chart |
-| **Side-by-Side Comparison** | Correlation matrix between LLM-judge scores and non-LLM string metrics; scatter of non-LLM BLEU vs. LLM Answer Accuracy with OLS trendline; mean-score comparison table |
-| **Data Explorer** | Filterable raw tables of either CSV (question, generated answer, key scores) |
+| **Overview by Type** | Health score per question type, heatmap of the three categories, bar charts for key metrics |
+| **Retrieval Failure Modes** | Context quality + ranking metrics, heatmaps, box plots, radar charts |
+| **Generation Failure Modes** | LLM-as-a-Judge scores and string/n-gram overlap metrics |
+| **End-to-End** | Noise sensitivity, response relevancy, semantic similarity |
+| **Generation Cost & Latency** | Token counts, latency, scatter of latency vs. input tokens |
+| **Data Explorer** | Filterable table of questions, answers, and key scores |
 
 **Sidebar controls**
 
+- Path to the evaluation CSV (pre-filled from `--csv` when provided)
 - Multi-select filter for question types
-- Toggle to show the full raw DataFrames
+- Toggle to show the full raw DataFrame
 
 **Key aggregates** (always visible at the top): number of questions, average input/output tokens, average generation latency, average number of LLM calls.
 
@@ -224,7 +226,7 @@ Exports every chunk stored in a FAISS knowledge-base directory (produced by `bui
 
 ### 🤖 `generate_qa_set.py`
 
-Performs stratified sampling for four failure-mode types and (optionally) calls an LLM to produce question–answer pairs.
+Performs stratified sampling for **eight** failure-mode types and (optionally) calls an LLM to produce question–answer pairs.
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -238,6 +240,19 @@ Performs stratified sampling for four failure-mode types and (optionally) calls 
 | `--skip-generation` | | `False` | Only perform sampling + merge; do **not** call the LLM. |
 | `--seed` | | `None` | Random seed for reproducible sampling. |
 
+#### Failure-mode types
+
+| Type | Description |
+|------|-------------|
+| `single-hop` | Question answerable from a single chunk (stratified by chapter) |
+| `multi-hop` | Question that requires combining two passages |
+| `negative_unsupported_questions` | Question whose answer is **not** in the context (rejection / “I don’t know” expected) |
+| `linguistic_complexity` | Question based on hard-to-read / low Flesch-score passages |
+| `document_maximization` | Question that needs evidence from many chunks (≈ 5) |
+| `cross_section_synthesis` | Question that joins facts from different chapters / sections |
+| `ambiguous` | Intentionally underspecified / vague question |
+| `terminological_variation` | Question that uses synonyms / paraphrases instead of the source wording |
+
 #### Useful flags (quick reference)
 
 | Flag | Description |
@@ -249,84 +264,92 @@ Performs stratified sampling for four failure-mode types and (optionally) calls 
 
 ---
 
-### 📊 `evaluate_rag_metrics.py` (LLM-based RAGAS)
+### 📊 `evaluate_rag_metrics.py` (unified evaluator)
 
-Evaluates agent outputs with the Ragas **collections** API. Metrics are computed **per row** and attached as new columns.
+Computes **all** metrics in one pass and writes a single enriched CSV.
 
-**Metrics computed**
+**Per-row metrics (LLM / Ragas collections, when an LLM is configured)**
 
 | Metric column | Description |
 |---------------|-------------|
-| `context_precision` | Context Precision |
-| `context_recall` | Context Recall |
-| `context_entities_recall` | Context Entity Recall |
-| `noise_sensitivity` | Noise Sensitivity |
+| `context_precision` | Context Precision (too many irrelevant chunks) |
+| `context_recall` | Context Recall (missing relevant chunks) |
+| `context_entities_recall` | Context Entity Recall (missing key entities) |
+| `noise_sensitivity` | Noise Sensitivity (impact of irrelevant context) |
 | `response_relevancy` | Answer / Response Relevancy (needs embeddings) |
-| `faithfulness` | Faithfulness |
+| `faithfulness` | Faithfulness (hallucination / unsupported claims) |
 | `answer_accuracy` | Answer Accuracy |
 | `context_relevance` | Context Relevance |
 | `response_groundedness` | Response Groundedness |
 | `factual_correctness` | Factual Correctness |
 | `nonllm_string_similarity` | Non-LLM string similarity (Levenshtein) |
-| `bleu` | BLEU |
-| `chrf` | CHRF |
-| `rouge` | ROUGE |
+| `ragas_bleu` / `ragas_chrf` / `ragas_rouge` | Ragas collection BLEU / CHRF / ROUGE |
+
+**Per-row metrics (always, pure lexical)**
+
+| Metric column | Description |
+|---------------|-------------|
+| `metric_bleu` | BLEU |
+| `metric_chrf` | CHRF |
+| `metric_rouge_l` | ROUGE-L |
+
+**Corpus-level metrics (when `ranx` is available)**
+
+| Metric column | Description |
+|---------------|-------------|
+| `corpus_mrr` | Mean Reciprocal Rank |
+| `corpus_map` | Mean Average Precision |
+| `corpus_ndcg@1/3/5/10` | Normalized Discounted Cumulative Gain at k |
+| `corpus_map@1/3/5/10` | MAP at k |
+
+For every metric the script also records:
+
+- `<metric>_latency_ms`
+- `<metric>_input_tokens`
+- `<metric>_output_tokens`
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `-i`, `--input` | ✅ | — | Path to the input CSV to evaluate. |
-| `-o`, `--output` | | `<input>_scored.csv` | Path for the output CSV. |
-| `--llm-config` | | `None` | Path to `llm_config.yaml` (provider + API key + model). |
+| `-o`, `--output` | | `<input>_all_metrics.csv` | Path for the output CSV. |
+| `--llm-config` | | `None` | Path to `llm_config.yaml` (required for LLM-based Ragas metrics). |
 | `--llm-entry` | | `claude_5_5` | Key inside the YAML config that selects the model / API key. |
 | `--embedding-model` | | `text-embedding-3-small` | OpenAI embedding model used by Response Relevancy. |
 | `--limit` | | `None` | Only evaluate the first N rows (useful for dry-runs). |
+| `--no-llm` | | `False` | Skip all LLM-based Ragas metrics. |
+| `--relevance-threshold` | | `0.25` | Token-overlap threshold used to build qrels for ranking metrics. |
+| `--no-ranking` | | `False` | Skip ranking metrics (MRR / NDCG / MAP). |
 
 **Notes**
 - Required columns: `question`, `generation_chunks`, `generation_answer`, `answer`.
-- `generation_chunks` is expected to be a stringified list of dicts containing at least a `text` field (and optionally `score`).
-- The script creates an OpenAI-compatible client via `ragas.llms.llm_factory` / `embedding_factory`. API keys are taken from the YAML config (or from the usual environment variables).
-- A mean summary of every metric is printed at the end.
-
----
-
-### 📉 `evaluate_rag_metrics_nollm.py` (no-LLM)
-
-Fully offline evaluation suite. Computes:
-
-1. **Per-row lexical metrics** – BLEU, CHRF, ROUGE-L (always available; NLTK used when present).
-2. **Ranking metrics** (via Ranx) – MRR, MAP, NDCG@1/3/5/10, MAP@k. Relevance judgments are built with a simple token-overlap heuristic against the gold `chunks` / `answer`.
-3. **Optional non-LLM RAGAS metrics** – BleuScore, CHRFScore, RougeScore, and SemanticSimilarity (when `sentence-transformers` is installed).
-
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `-i`, `--input` | ✅ | — | Input CSV (must contain `question`, `answer`, `generation_answer`, `generation_chunks`). |
-| `-o`, `--output` | | `<input>_nollm.csv` | Output CSV path. |
-| `--limit` | | `None` | Evaluate only the first N rows. |
-| `--metrics` | | all available | Subset of RAGAS metrics to run (e.g. `bleu_score chrf_score rouge_score semantic_similarity`). |
-| `--relevance-threshold` | | `0.25` | Token-overlap threshold used to build qrels for ranking metrics. |
-| `--no-ranking` | | `False` | Skip ranking metrics (MRR / NDCG / MAP). |
-| `--no-ragas` | | `False` | Skip RAGAS batch metrics. |
-
-**Notes**
+- `generation_chunks` is expected to be a stringified list of dicts containing at least a `text` field (and optionally `score` / `chunk_id`).
 - Optional column `chunks` (gold context) improves the quality of the relevance judgments used for ranking metrics.
 - Ranking metrics are written as constant columns (`corpus_mrr`, `corpus_ndcg@5`, …) so every row carries the corpus-level score.
-- A JSON summary (`*.summary.json`) with means and ranking/RAGAS aggregates is written next to the CSV.
-- Graceful degradation: missing optional packages (`ranx`, `ragas`, `nltk`, `sentence-transformers`) simply disable the corresponding metric groups.
+- A JSON summary (`*.summary.json`) with means and ranking aggregates is written next to the CSV.
+- Graceful degradation: missing optional packages (`ranx`, `ragas`, `nltk`, `sentence-transformers`, `openai`) simply disable the corresponding metric groups.
 
 ---
 
 ### 📊 `metric_visualizer.py` (Streamlit dashboard)
 
-Interactive multi-tab dashboard for exploring the CSVs produced by the two evaluation scripts.
+Interactive multi-tab dashboard for exploring the unified evaluation CSV.
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| *(none)* | — | — | Launch with `uv run streamlit run metric_visualizer.py`. Data paths are configured inside `load_data()`. |
+| `--csv`, `-c` | | `None` | Path to the evaluation CSV. Can also be typed in the sidebar. |
+
+**Launch examples**
+
+```bash
+streamlit run metric_visualizer.py -- --csv path/to/eval.csv
+python metric_visualizer.py --csv path/to/eval.csv   # opens Streamlit if configured
+```
 
 **Notes**
-- Expects both the LLM-scored CSV and the no-LLM CSV (same questions, same order).
-- Sidebar lets you filter by failure-mode type and toggle full raw tables.
-- Uses Plotly for interactive charts (hover, zoom, export). `statsmodels` is required only for the OLS trendline on the Side-by-Side tab.
+- Expects a **single** CSV produced by `evaluate_rag_metrics.py`.
+- Sidebar lets you change the CSV path, filter by failure-mode type, and toggle full raw tables.
+- Uses Plotly for interactive charts (hover, zoom, export). Every chart has a unique `key` to avoid Streamlit ID collisions.
+- Health scores are the unweighted mean of the metrics present in each category (`noise_sensitivity` is inverted).
 - See [§6 Visualize metrics](#6-visualize-metrics-metric_visualizerpy) for a full feature overview.
 
 ---
@@ -345,7 +368,7 @@ Interactive multi-tab dashboard for exploring the CSVs produced by the two evalu
 
 | Column               | Description |
 |----------------------|-------------|
-| `type`               | Failure-mode type (`basic`, `information_integration`, `negative_unsupported_questions`, `complexity`) |
+| `type`               | Failure-mode type (see table above) |
 | `source`             | Source document name |
 | `chapter`            | Chapter(s) the chunk(s) belong to |
 | `question`           | Generated question |
@@ -356,7 +379,7 @@ Interactive multi-tab dashboard for exploring the CSVs produced by the two evalu
 | `output_token_count` | Completion tokens |
 | `elapsed_time`       | Seconds taken by the LLM call |
 
-### Evaluation input schema (both `evaluate_*.py` scripts)
+### Evaluation input schema (`evaluate_rag_metrics.py`)
 
 | Column | Description |
 |--------|-------------|
@@ -366,16 +389,28 @@ Interactive multi-tab dashboard for exploring the CSVs produced by the two evalu
 | `generation_chunks` | Retrieved chunks (stringified list of dicts with `text`, optionally `score` / `chunk_id`) |
 | `chunks` | *(optional)* Gold context text used for ranking relevance judgments |
 
+### Evaluation output schema (produced by `evaluate_rag_metrics.py`)
+
+All input columns are preserved. New columns include:
+
+- Lexical: `metric_bleu`, `metric_chrf`, `metric_rouge_l` (+ latency / token companions)
+- Ranking: `corpus_mrr`, `corpus_map`, `corpus_ndcg@k`, `corpus_map@k` (+ latency / token companions)
+- LLM / Ragas (when enabled): `context_precision`, `context_recall`, `context_entities_recall`, `noise_sensitivity`, `response_relevancy`, `faithfulness`, `answer_accuracy`, `context_relevance`, `response_groundedness`, `factual_correctness`, `nonllm_string_similarity`, `ragas_bleu`, `ragas_chrf`, `ragas_rouge` (+ latency / token companions)
+
 ---
 
 ## 📝 Notes
 
-- For the `information_integration` type the two sampled chunks are joined with `|` before being sent to the LLM.
-- The negative-prompt explicitly instructs the model to produce questions that **cannot** be answered from the given context (the expected answer should be a rejection / “insufficient information”).
+- For multi-chunk types (`multi-hop`, `document_maximization`, `cross_section_synthesis`) the sampled chunks are joined with `|` before being sent to the LLM.
+- The negative prompt explicitly instructs the model to produce questions that **cannot** be answered from the given context (the expected answer should be a rejection / “insufficient information”).
 - API keys are read from the YAML config (or from the usual environment variables that LiteLLM / OpenAI clients respect).
 - Sampling strategies:
-  - **basic** – stratified by chapter
-  - **information_integration** – pairs of chunks (multi-hop)
+  - **single-hop** – stratified by chapter
+  - **multi-hop** – pairs of chunks
   - **negative_unsupported_questions** – questions whose answers are deliberately absent
-  - **complexity** – focuses on harder-to-read passages
-- Ranking relevance in the no-LLM evaluator is a heuristic (token overlap ≥ threshold with gold context or gold answer). Adjust `--relevance-threshold` if the default is too strict or too lenient for your data.
+  - **linguistic_complexity** – focuses on harder-to-read passages
+  - **document_maximization** – larger groups of chunks (≈ 5)
+  - **cross_section_synthesis** – prefers chunks from different chapters
+  - **ambiguous** – underspecified questions
+  - **terminological_variation** – synonym / paraphrase questions
+- Ranking relevance in the evaluator is a heuristic (token overlap ≥ threshold with gold context or gold answer). Adjust `--relevance-threshold` if the default is too strict or too lenient for your data.

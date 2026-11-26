@@ -35,7 +35,7 @@ except ImportError:
 
 
 # ===========================================================================
-# Sampling helpers (from notebook)
+# Sampling helpers
 # ===========================================================================
 
 def sample_stratified(
@@ -52,7 +52,7 @@ def sample_stratified(
         The input DataFrame.
     num_entries : int
         Desired number of samples (total size of the returned sample).
-    stratification_base : str or list of str
+    stratification_base : str or list of column names
         Column name (or list of column names) used to define the strata.
 
     Returns
@@ -199,6 +199,46 @@ def sample_multiple(
     return pd.DataFrame(results)
 
 
+def sample_cross_section(
+    df: pd.DataFrame,
+    num_chunks: int,
+    num_entries: int,
+    column: str = "chunks",
+) -> pd.DataFrame:
+    """
+    Sample groups of rows that preferably come from different chapters/sections.
+    Falls back to ordinary sampling when fewer distinct chapters exist.
+    """
+    if "chapter" not in df.columns:
+        return sample_multiple(df, num_chunks=num_chunks, num_entries=num_entries, column=column)
+
+    results = []
+    chapters = df["chapter"].unique().tolist()
+
+    for _ in range(num_entries):
+        # Prefer one chunk per distinct chapter when possible
+        if len(chapters) >= num_chunks:
+            chosen_chapters = np.random.choice(chapters, size=num_chunks, replace=False)
+            sampled_rows = []
+            for ch in chosen_chapters:
+                pool = df[df["chapter"] == ch]
+                sampled_rows.append(pool.sample(n=1))
+            sampled = pd.concat(sampled_rows, ignore_index=True)
+        else:
+            sampled = df.sample(n=min(num_chunks, len(df)), replace=False)
+
+        results.append(
+            {
+                "num_chunks": len(sampled),
+                "source": sampled["source"].astype(str).tolist(),
+                "chunks": sampled[column].astype(str).tolist(),
+                "chapter": sampled["chapter"].astype(str).tolist(),
+            }
+        )
+
+    return pd.DataFrame(results)
+
+
 # ===========================================================================
 # Content sampling
 # ===========================================================================
@@ -208,25 +248,25 @@ def perform_content_sampling(
     num_entries: int = 10,
 ) -> pd.DataFrame:
     """
-    Run the four sampling strategies described in the notebook and merge them.
+    Run the sampling strategies for all failure-mode types and merge them.
     """
-    # --- Basic ---
-    pdf_coverage = sample_stratified(
+    # --- Single-hop ---
+    pdf_single = sample_stratified(
         df=chunks_df,
         num_entries=num_entries,
         stratification_base="chapter",
     )
-    pdf_coverage = pdf_coverage.copy()
-    pdf_coverage["type"] = "basic"
+    pdf_single = pdf_single.copy()
+    pdf_single["type"] = "single-hop"
 
-    # --- Information Integration (multi-hop) ---
-    pdf_info_integration = sample_multiple(
+    # --- Multi-hop ---
+    pdf_multi = sample_multiple(
         chunks_df,
         num_chunks=2,
         num_entries=num_entries,
         column="chunks",
     )
-    pdf_info_integration["type"] = "information_integration"
+    pdf_multi["type"] = "multi-hop"
 
     # --- Negative / Unsupported questions ---
     pdf_unsupported = sample_stratified(
@@ -237,23 +277,67 @@ def perform_content_sampling(
     pdf_unsupported = pdf_unsupported.copy()
     pdf_unsupported["type"] = "negative_unsupported_questions"
 
-    # --- Complexity (Flesch-oriented) ---
+    # --- Linguistic complexity ---
     pdf_complexity = sample_stratified(
         chunks_df,
         num_entries=num_entries,
         stratification_base="chunks",
     )
     pdf_complexity = pdf_complexity.copy()
-    pdf_complexity["type"] = "complexity"
+    pdf_complexity["type"] = "linguistic_complexity"
+
+    # --- Document maximization ---
+    # Sample a larger number of chunks so the generated question must draw
+    # on extensive documentation.
+    pdf_docmax = sample_multiple(
+        chunks_df,
+        num_chunks=5,
+        num_entries=num_entries,
+        column="chunks",
+    )
+    pdf_docmax["type"] = "document_maximization"
+
+    # --- Cross-section synthesis ---
+    # Prefer chunks that come from different chapters / sections.
+    pdf_cross = sample_cross_section(
+        chunks_df,
+        num_chunks=3,
+        num_entries=num_entries,
+        column="chunks",
+    )
+    pdf_cross["type"] = "cross_section_synthesis"
+
+    # --- Ambiguous (underspecified) questions ---
+    pdf_ambiguous = sample_stratified(
+        chunks_df,
+        num_entries=num_entries,
+        stratification_base="chapter",
+    )
+    pdf_ambiguous = pdf_ambiguous.copy()
+    pdf_ambiguous["type"] = "ambiguous"
+
+    # --- Terminological variation ---
+    pdf_term = sample_stratified(
+        chunks_df,
+        num_entries=num_entries,
+        stratification_base="chapter",
+    )
+    pdf_term = pdf_term.copy()
+    pdf_term["type"] = "terminological_variation"
 
     # --- Merge ---
-    # Align columns: basic / unsupported / complexity have scalar chapter & chunks
-    # while info_integration has lists.
+    # Align columns: single-hop / unsupported / complexity / ambiguous /
+    # terminological have scalar chapter & chunks while multi-chunk types
+    # have lists.
     frames = [
-        pdf_coverage[["type", "source", "chapter", "chunks"]],
-        pdf_info_integration[["type", "source", "chapter", "chunks"]],
+        pdf_single[["type", "source", "chapter", "chunks"]],
+        pdf_multi[["type", "source", "chapter", "chunks"]],
         pdf_unsupported[["type", "source", "chapter", "chunks"]],
         pdf_complexity[["type", "source", "chapter", "chunks"]],
+        pdf_docmax[["type", "source", "chapter", "chunks"]],
+        pdf_cross[["type", "source", "chapter", "chunks"]],
+        pdf_ambiguous[["type", "source", "chapter", "chunks"]],
+        pdf_term[["type", "source", "chapter", "chunks"]],
     ]
     pdf_all = pd.concat(frames, ignore_index=True)
     return pdf_all
@@ -277,8 +361,8 @@ Context: {context}
 """
 
 QUESTION_PROMPTS: Dict[str, str] = {
-    "basic": "Generate a question that can be answered with the provided context.",
-    "information_integration": (
+    "single-hop": "Generate a question that can be answered with the provided context.",
+    "multi-hop": (
         "In the provided context there are 2 passages separated by | character, "
         "generate a question that can be answered only with both passages."
     ),
@@ -309,7 +393,7 @@ Treat the entire provided content as the only knowledge base that the RAG system
 - **Random / fabricated**: Invent plausible questions that simply have no corresponding information in the document.
 - **Cross-document / topic-shift**: If multiple documents are provided, generate a question that would be answerable from one document but is asked while only another (unrelated) document is available. If only one document is given, create a question from a closely related but different topic.
 """,
-    "complexity": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
+    "linguistic_complexity": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
 
 Your task is to create COMPLEXITY-ORIENTED TEST CASES that target the most difficult-to-read passages in a document, following the Flesch Reading Ease prioritization strategy used in RAG-TESTER.
 
@@ -351,6 +435,80 @@ Good question:
 Expected answer should accurately reflect the waiver conditions and the 180-day limit.
 
 Now generate the requested number of high-quality complexity-oriented test cases based on the most difficult passages provided.""",
+    "document_maximization": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
+
+Your task is to create DOCUMENT-MAXIMIZATION test cases. These questions are designed so that a correct answer requires retrieving and synthesizing information that is spread across an extensive set of document chunks (many passages).
+
+### Goal
+Produce questions whose answers cannot be found in any single short passage. The system must pull together facts, constraints, numbers, definitions or procedures that appear in several different places across a large document (or a large collection of chunks).
+
+### Input
+You will receive multiple document chunks separated by the | character. Treat the whole set as the knowledge base.
+
+### Generation rules
+1. The question must require information that is distributed across several of the provided chunks (ideally three or more).
+2. Prefer questions that ask for an overview, a complete list, a comparison of multiple aspects, a multi-step procedure, or a synthesis of scattered facts.
+3. The question should still be natural and domain-plausible.
+4. Do not invent facts that are absent from the supplied chunks.
+5. The expected answer must be a faithful aggregation or synthesis of the relevant pieces found in the context.
+6. Avoid questions that can be answered from only one or two short sentences.
+
+These tests expose RAG systems that retrieve only a narrow context window or that fail to aggregate evidence from many retrieved passages.""",
+    "cross_section_synthesis": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
+
+Your task is to create CROSS-SECTION SYNTHESIS test cases. These questions require combining information that appears in different sections (or chapters) of a document.
+
+### Goal
+Generate questions that can be answered only by bringing together facts, concepts or constraints that live in distinct sections of the source material. A system that retrieves only intra-section context will fail; a system that can join evidence across section boundaries will succeed.
+
+### Input
+You will receive several passages that come from different sections/chapters (separated by |).  
+
+### Generation rules
+1. The question must require at least two pieces of information that originate in different sections.
+2. Prefer questions that compare, contrast, relate, or combine concepts that the document itself keeps in separate sections.
+3. The question should be natural and answerable solely from the supplied context.
+4. Do not invent information.
+5. The expected answer should clearly show how the pieces from the different sections fit together.
+
+These tests probe the ability of a RAG pipeline to perform inter-section reasoning rather than pure local retrieval.""",
+    "ambiguous": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
+
+Your task is to create AMBIGUOUS / UNDERSPECIFIED questions.
+
+### Goal
+Generate questions that are intentionally underspecified, vague, or open to multiple interpretations given the provided context. A well-behaved RAG system should either ask for clarification, state the ambiguity, or provide the most plausible interpretation while signalling uncertainty. These tests detect systems that silently pick one interpretation and answer as if the question were precise.
+
+### Input
+You will receive one or more document chunks.
+
+### Generation rules
+1. The question must be related to the domain of the context but leave key parameters, scope, time frame, entity, or perspective unspecified.
+2. Examples of underspecification: missing time period, missing entity name, missing unit, missing comparison baseline, missing geographic or organisational scope, pronouns without clear antecedent, etc.
+3. The question should still look like a realistic user query (not artificially broken).
+4. Prefer open-ended questions rather than yes/no.
+5. The “answer” field should briefly describe the ambiguity and, if possible, the range of plausible answers that the context would support, or state that clarification is required.
+
+These tests evaluate whether the system recognises and handles underspecification instead of hallucinating a precise answer.""",
+    "terminological_variation": """You are an expert test-case generator for Retrieval-Augmented Generation (RAG) systems.
+
+Your task is to create TERMINOLOGICAL-VARIATION test cases.
+
+### Goal
+Generate questions that use domain-related vocabulary, synonyms, paraphrases, abbreviations, or alternative technical terms that differ from the exact wording present in the source chunks. The correct answer is still fully contained in the context, but surface-form matching is insufficient; the system must recognise lexical and terminological variants.
+
+### Input
+You will receive one or more document chunks.
+
+### Generation rules
+1. Identify key concepts, entities, processes or metrics that appear in the context.
+2. Rephrase the question so that it employs natural synonyms, near-synonyms, broader/narrower terms, common abbreviations, or domain jargon that a knowledgeable user might use, while remaining faithful to the meaning.
+3. The question must still be fully answerable from the provided context.
+4. Avoid inventing facts or using terms that change the semantics.
+5. Prefer questions that would break naive keyword-based retrieval but should succeed with good semantic retrieval or query expansion.
+6. The expected answer should be a faithful extraction or synthesis using the terminology of the source (or a clear mapping).
+
+These tests evaluate robustness to lexical gap and synonymy, which are common failure modes of sparse and even some dense retrievers.""",
 }
 
 
@@ -417,7 +575,7 @@ def generate_questions(
             context = str(row["chunks"])
 
         prompt_type = row["type"]
-        instruction = QUESTION_PROMPTS.get(prompt_type, QUESTION_PROMPTS["basic"])
+        instruction = QUESTION_PROMPTS.get(prompt_type, QUESTION_PROMPTS["single-hop"])
 
         message = GENERIC_PROMPT.format(instruction=instruction, context=context)
 
@@ -504,9 +662,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Generate a RAG failure-mode question set from pre-chunked text. "
-            "Performs stratified sampling (basic, information-integration, "
-            "negative-unsupported, complexity) and optionally calls an LLM "
-            "to produce question/answer pairs."
+            "Performs stratified sampling (single-hop, multi-hop, "
+            "negative-unsupported, linguistic-complexity, document-maximization, "
+            "cross-section-synthesis, ambiguous, terminological-variation) "
+            "and optionally calls an LLM to produce question/answer pairs."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -583,7 +742,7 @@ def main() -> int:
     print(f"Loading CSV: {input_path}")
     chunks_df = pd.read_csv(input_path)
 
-    required_cols = {"source","chunks", "chapter"}
+    required_cols = {"source", "chunks", "chapter"}
     missing = required_cols - set(chunks_df.columns)
     if missing:
         print(
@@ -633,7 +792,10 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Build a clean filename
-    source = pdf_all.loc[0, 'source']
+    source = pdf_all.loc[0, "source"]
+    # source may be a list for multi-chunk types; normalise
+    if isinstance(source, list):
+        source = source[0] if source else "unknown"
     out_file = out_dir / f"qa_set_{source}.csv"
 
     cols = [
@@ -650,7 +812,7 @@ def main() -> int:
     ]
     # Keep only columns that exist (in case generation was skipped)
     cols = [c for c in cols if c in pdf_all.columns]
-    
+
     from Helper import Log
     with Log.save_file(out_file) as filename:
         pdf_all[cols].to_csv(filename, sep=",", index=False)
