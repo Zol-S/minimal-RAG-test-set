@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+# Defaults used when evaluation.yaml has no metrics block (UI overrides these).
+DEFAULT_METRICS = {'context_precision': False, 'context_recall': True, 'context_entities_recall': True, 'context_relevance': True, 'faithfulness': True, 'response_groundedness': True, 'answer_accuracy': True, 'factual_correctness': True, 'noise_sensitivity': False, 'response_relevancy': True, 'nonllm_string_similarity': True, 'ragas_bleu': False, 'ragas_chrf': False, 'ragas_rouge': False, 'metric_bleu': True, 'metric_chrf': True, 'metric_rouge_l': True, 'corpus_mrr': True, 'corpus_map': True, 'corpus_ndcg@1': True, 'corpus_ndcg@3': True, 'corpus_ndcg@5': True, 'corpus_ndcg@10': True, 'corpus_map@1': True, 'corpus_map@3': True, 'corpus_map@5': True, 'corpus_map@10': True}
+
 
 def load_yaml(path: str | Path) -> Dict[str, Any]:
     path = Path(path)
@@ -165,8 +168,12 @@ class EvaluationConfig:
         path = Path(path)
         data = load_yaml(path)
         metrics = data.get("metrics") or {}
-        # Normalise to bool
-        metrics = {k: bool(v) for k, v in metrics.items()}
+        # Normalise to bool; fall back to package defaults when the YAML
+        # has no metrics block (selection is done in the Streamlit UI).
+        if metrics:
+            metrics = {k: bool(v) for k, v in metrics.items()}
+        else:
+            metrics = dict(DEFAULT_METRICS)
         ranking = data.get("ranking") or {}
         llm = data.get("llm") or {}
         llm_path = llm.get("config_path")
@@ -223,6 +230,25 @@ class EvaluationConfig:
             use_ranking=bool(data.get("use_ranking", True)),
             use_lexical=bool(data.get("use_lexical", True)),
         )
+
+    def apply_metric_selection(self, selected: Dict[str, bool]) -> None:
+        """Override enabled metrics from the UI checkboxes.
+
+        Also tweaks master switches so we do not spin up LLM / ranking
+        machinery when nothing in that family is selected.
+        """
+        self.metrics = {k: bool(v) for k, v in selected.items()}
+        lexical = {"metric_bleu", "metric_chrf", "metric_rouge_l"}
+        ranking_prefixes = ("corpus_",)
+        llm_keys = [
+            k for k in self.metrics
+            if k not in lexical and not k.startswith("corpus_")
+        ]
+        self.use_lexical = any(self.metrics.get(k) for k in lexical)
+        self.use_ranking = any(
+            self.metrics.get(k) for k in self.metrics if k.startswith("corpus_")
+        )
+        self.use_llm = any(self.metrics.get(k) for k in llm_keys)
 
     def is_enabled(self, name: str) -> bool:
         """Return True if the metric should be computed."""

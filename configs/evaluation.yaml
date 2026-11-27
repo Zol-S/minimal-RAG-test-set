@@ -1,57 +1,14 @@
-# Evaluation metrics configuration
-# Set each metric to true to enable it during evaluation, false to skip.
+# Evaluation settings (metric selection is done in the Streamlit UI)
 
 use_llm: true          # Master switch for all LLM / Ragas metrics
 use_ranking: true      # Master switch for corpus ranking metrics (MRR, MAP, nDCG)
 use_lexical: true      # Master switch for BLEU / CHRF / ROUGE-L
 
 llm:
-  # Path to an optional LLM provider config (api keys, model names)
-  # config_path: "configs/llm_config.yaml"
-  config_path: null
-  entry: "claude_5_5"
+  config_path: "configs/llm.yaml"
+  entry: "gpt_6_luna"
   embedding_model: "text-embedding-3-small"
 
 ranking:
   relevance_threshold: 0.25
   k_values: [1, 3, 5, 10]
-
-metrics:
-  # ---- Retrieval / context quality (LLM) ----
-  context_precision: false
-  context_recall: true
-  context_entities_recall: true
-  context_relevance: true
-
-  # ---- Generation quality (LLM) ----
-  faithfulness: true
-  response_groundedness: true
-  answer_accuracy: true
-  factual_correctness: true
-
-  # ---- End-to-end (LLM) ----
-  noise_sensitivity: false
-  response_relevancy: true
-  nonllm_string_similarity: true
-
-  # ---- Ragas string metrics (collections API) ----
-  ragas_bleu: false
-  ragas_chrf: false
-  ragas_rouge: false
-
-  # ---- Pure lexical (always cheap, no LLM) ----
-  metric_bleu: true
-  metric_chrf: true
-  metric_rouge_l: true
-
-  # ---- Corpus ranking (Ranx) ----
-  corpus_mrr: true
-  corpus_map: true
-  corpus_ndcg@1: true
-  corpus_ndcg@3: true
-  corpus_ndcg@5: true
-  corpus_ndcg@10: true
-  corpus_map@1: true
-  corpus_map@3: true
-  corpus_map@5: true
-  corpus_map@10: true

@@ -3,7 +3,7 @@ Streamlit on-the-fly RAG Evaluation Dashboard
 
 - Loads a questions CSV
 - Calls the agent (configs/agent.yaml) for every row
-- Evaluates only metrics marked true in configs/evaluation.yaml
+- Evaluates metrics selected in the sidebar checkboxes
 - Live tqdm-style progress bar (%, elapsed, remaining)
 - Charts update as each row completes
 - Shows confidence and margin of error per metric
@@ -39,6 +39,40 @@ if str(SRC_ROOT) not in sys.path:
 from core.agent_runner import AgentRunner
 from core.config import AgentConfig, EvaluationConfig
 from core.evaluator import OnTheFlyEvaluator, RowEvaluation
+
+
+# ---------------------------------------------------------------------------
+# Metric catalog for the sidebar checkboxes
+# (default_on=False only for context_precision and noise_sensitivity)
+# ---------------------------------------------------------------------------
+METRIC_CATALOG = [
+    # (key, label, heavy_hint or None, default_on)
+    ("context_precision", "Context Precision", "heavy · many LLM calls", False),
+    ("context_recall", "Context Recall", "LLM", True),
+    ("context_entities_recall", "Context Entities Recall", "LLM", True),
+    ("context_relevance", "Context Relevance", "LLM", True),
+    ("faithfulness", "Faithfulness", "heavy · LLM", True),
+    ("response_groundedness", "Response Groundedness", "LLM", True),
+    ("answer_accuracy", "Answer Accuracy", "LLM", True),
+    ("factual_correctness", "Factual Correctness", "LLM", True),
+    ("noise_sensitivity", "Noise Sensitivity", "very heavy · multi-step LLM", False),
+    ("response_relevancy", "Response Relevancy", "heavy · embeddings + LLM", True),
+    ("nonllm_string_similarity", "String Similarity", None, True),
+    ("metric_bleu", "BLEU", None, True),
+    ("metric_chrf", "CHRF", None, True),
+    ("metric_rouge_l", "ROUGE-L", None, True),
+    ("corpus_mrr", "MRR", None, True),
+    ("corpus_map", "MAP", None, True),
+    ("corpus_ndcg@1", "nDCG@1", None, True),
+    ("corpus_ndcg@3", "nDCG@3", None, True),
+    ("corpus_ndcg@5", "nDCG@5", None, True),
+    ("corpus_ndcg@10", "nDCG@10", None, True),
+    ("corpus_map@1", "MAP@1", None, True),
+    ("corpus_map@3", "MAP@3", None, True),
+    ("corpus_map@5", "MAP@5", None, True),
+    ("corpus_map@10", "MAP@10", None, True),
+]
+
 
 # ---------------------------------------------------------------------------
 # Page config & styling
@@ -444,18 +478,35 @@ def main(questions_path: Optional[str] = None) -> None:
 
     try:
         eval_cfg = EvaluationConfig.from_yaml(eval_yaml, base_dir=PROJECT_ROOT)
-        enabled = eval_cfg.enabled_metric_names()
-        st.sidebar.markdown("**Enabled metrics**")
-        st.sidebar.write(", ".join(enabled) if enabled else "_none_")
     except Exception as e:
         st.sidebar.error(f"Could not load evaluation config: {e}")
         eval_cfg = None
 
+    # ---- Metric checkboxes (UI is source of truth) ----
+    st.sidebar.markdown("**Metrics**")
+    st.sidebar.caption(
+        "Unchecked metrics are skipped. Labels marked *heavy* use more LLM / embedding calls."
+    )
+    selected_metrics: Dict[str, bool] = {}
+    for key, label, hint, default_on in METRIC_CATALOG:
+        display = label if not hint else f"{label}  ·  _{hint}_"
+        selected_metrics[key] = st.sidebar.checkbox(
+            display,
+            value=default_on,
+            key=f"metric_cb_{key}",
+        )
+    if eval_cfg is not None:
+        eval_cfg.apply_metric_selection(selected_metrics)
+
     try:
         agent_cfg = AgentConfig.from_yaml(agent_yaml)
-        if agent_cfg.cwd is None:
+        # cwd only matters for CLI mode; safe no-op for HTTP
+        if getattr(agent_cfg, "cwd", None) is None and getattr(agent_cfg, "mode", "http") == "cli":
             agent_cfg.cwd = str(PROJECT_ROOT)
-        st.sidebar.caption(f"Agent: `{agent_cfg.entrypoint}`")
+        if getattr(agent_cfg, "mode", "http") == "http":
+            st.sidebar.caption(f"Agent HTTP: `{agent_cfg.url}`")
+        else:
+            st.sidebar.caption(f"Agent CLI: `{getattr(agent_cfg, 'entrypoint', '')}`")
     except Exception as e:
         st.sidebar.error(f"Could not load agent config: {e}")
         agent_cfg = None
