@@ -1,0 +1,36 @@
+# Agent invocation configuration
+# The evaluator / Streamlit UI will call this HTTP service for every question.
+
+agent:
+  # Transport: "http" (POST JSON) or "cli" (subprocess – legacy)
+  mode: http
+
+  # --- HTTP settings (used when mode = http) ---
+  # Full URL of the agent endpoint
+  url: "http://localhost:8000/"
+
+  # HTTP method (almost always POST)
+  method: POST
+
+  # JSON body field that carries the question text
+  question_field: question
+
+  # Extra static fields merged into every request body
+  # e.g. { "agent": "basic", "top_k": 5 }
+  request_body: {}
+
+  # Optional extra HTTP headers
+  headers:
+    Content-Type: application/json
+    # Authorization: "Bearer <token>"
+
+  # --- Shared ---
+  # Maximum wall-clock time for a single agent call (seconds)
+  timeout_s: 120.0
+
+  # JSON response keys
+  answer_key: answer
+  # Primary key for retrieved chunks (list of objects or strings)
+  contexts_key: chunks
+  # Fallback key if contexts_key is absent
+  contexts_key_fallback: contexts
