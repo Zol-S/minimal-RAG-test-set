@@ -813,7 +813,7 @@ def main() -> int:
     # Keep only columns that exist (in case generation was skipped)
     cols = [c for c in cols if c in pdf_all.columns]
 
-    from Helper import Log
+    from core.Helper import Log
     with Log.save_file(out_file) as filename:
         pdf_all[cols].to_csv(filename, sep=",", index=False)
 

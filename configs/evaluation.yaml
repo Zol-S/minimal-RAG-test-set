@@ -1,8 +1,39 @@
-# Evaluation settings (metric selection is done in the Streamlit UI)
+# Evaluation settings
+# Metric flags (true/false) control which metrics are enabled by default.
+# The Streamlit UI checkboxes are initialised from these values.
 
 use_llm: true          # Master switch for all LLM / Ragas metrics
 use_ranking: true      # Master switch for corpus ranking metrics (MRR, MAP, nDCG)
 use_lexical: true      # Master switch for BLEU / CHRF / ROUGE-L
+
+metrics:
+  context_precision: false
+  context_recall: true
+  context_entities_recall: true
+  context_relevance: true
+  faithfulness: true
+  response_groundedness: true
+  answer_accuracy: true
+  factual_correctness: true
+  noise_sensitivity: false
+  response_relevancy: true
+  nonllm_string_similarity: true
+  ragas_bleu: false
+  ragas_chrf: false
+  ragas_rouge: false
+  metric_bleu: true
+  metric_chrf: true
+  metric_rouge_l: true
+  corpus_mrr: true
+  corpus_map: true
+  corpus_ndcg@1: true
+  corpus_ndcg@3: true
+  corpus_ndcg@5: true
+  corpus_ndcg@10: true
+  corpus_map@1: true
+  corpus_map@3: true
+  corpus_map@5: true
+  corpus_map@10: true
 
 llm:
   config_path: "configs/llm.yaml"

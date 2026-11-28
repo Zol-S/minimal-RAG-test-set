@@ -8,7 +8,8 @@ and writes an enriched results CSV + summary JSON.
 
 Usage (from project root):
   python src/evaluate_rag_metrics.py -i sample_questions.csv
-  python src/evaluate_rag_metrics.py -i questions.csv -o out.csv --limit 5
+  python src/evaluate_rag_metrics.py -i questions.csv -o results_dir --limit 5
+  python src/evaluate_rag_metrics.py -i questions.csv -o results_dir --continue --limit 10
   python src/evaluate_rag_metrics.py -i questions.csv --no-agent
   python src/evaluate_rag_metrics.py -i questions.csv \\
       --agent-config configs/agent.yaml \\
@@ -60,13 +61,30 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Output CSV path. Defaults to <input_stem>_evaluated.csv",
+        help=(
+            "Output path. If a directory is given, the result is written inside "
+            "it using the same filename as the input. If a file path is given, "
+            "it is used as-is. Defaults to <input_stem>_evaluated.csv next to the input."
+        ),
     )
     p.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Evaluate only the first N rows",
+        help=(
+            "Maximum number of rows to process. Without --continue this is the "
+            "first N rows of the input; with --continue it is the number of "
+            "*new* rows to evaluate from the resume point."
+        ),
+    )
+    p.add_argument(
+        "--continue",
+        dest="continue_eval",
+        action="store_true",
+        help=(
+            "If the resolved output file already exists and has fewer rows than "
+            "the input CSV, resume evaluation from the next missing row and append."
+        ),
     )
     p.add_argument(
         "--agent-config",
@@ -101,6 +119,34 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def resolve_output_path(input_path: Path, output: Optional[Path]) -> Path:
+    """
+    Resolve the output CSV path.
+
+    - If output is None → <input_stem>_evaluated.csv next to the input.
+    - If output is an existing directory, or ends with a path separator /
+      (or has no suffix and does not exist as a file) → treat as directory
+      and write <dir>/<input.name>.
+    - Otherwise treat output as a concrete file path.
+    """
+    if output is None:
+        return input_path.with_name(input_path.stem + "_evaluated.csv")
+
+    output = Path(output)
+    # Explicit directory (exists as dir, or trailing separator, or no suffix)
+    is_dir = (
+        output.is_dir()
+        or str(output).endswith(("/", "\\"))
+        or (output.suffix == "" and not output.exists())
+    )
+    if is_dir:
+        output.mkdir(parents=True, exist_ok=True)
+        return output / input_path.name
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    return output
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
 
@@ -109,19 +155,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     print(f"[info] Loading questions from {args.input} ...")
-    df = pd.read_csv(args.input)
-    print(f"[info] Loaded {len(df)} rows, columns: {list(df.columns)}")
+    df_full = pd.read_csv(args.input)
+    print(f"[info] Loaded {len(df_full)} rows, columns: {list(df_full.columns)}")
 
-    if args.question_col not in df.columns:
+    if args.question_col not in df_full.columns:
         print(
             f"[error] Missing required column '{args.question_col}'",
             file=sys.stderr,
         )
         return 1
-
-    if args.limit is not None:
-        df = df.head(args.limit).copy()
-        print(f"[info] Limited to first {len(df)} rows")
 
     if not args.agent_config.exists():
         print(f"[error] Agent config not found: {args.agent_config}", file=sys.stderr)
@@ -129,6 +171,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.eval_config.exists():
         print(f"[error] Eval config not found: {args.eval_config}", file=sys.stderr)
         return 1
+
+    out_path = resolve_output_path(args.input, args.output)
+    print(f"[info] Output path: {out_path}")
+
+    # Continue / resume logic
+    start_idx = 0
+    existing_df: Optional[pd.DataFrame] = None
+    if args.continue_eval and out_path.exists():
+        try:
+            existing_df = pd.read_csv(out_path)
+            start_idx = len(existing_df)
+            if start_idx >= len(df_full):
+                print(
+                    f"[info] Output already complete ({start_idx} rows ≥ "
+                    f"{len(df_full)} input rows). Nothing to do."
+                )
+                return 0
+            print(
+                f"[info] Continuing from row {start_idx} "
+                f"({len(df_full) - start_idx} remaining)"
+            )
+        except Exception as exc:
+            print(
+                f"[warn] Could not read existing output for --continue: {exc}. "
+                "Starting from the beginning.",
+                file=sys.stderr,
+            )
+            existing_df = None
+            start_idx = 0
+    elif args.continue_eval:
+        print("[info] --continue set but no existing output found; starting fresh.")
+
+    # Select rows to process
+    df = df_full.iloc[start_idx:].copy()
+    if args.limit is not None:
+        df = df.head(args.limit).copy()
+        print(
+            f"[info] Limited to {len(df)} row(s) "
+            f"(from input index {start_idx})"
+        )
+
+    if len(df) == 0:
+        print("[info] No new rows to process.")
+        return 0
 
     agent_cfg = AgentConfig.from_yaml(args.agent_config)
     eval_cfg = EvaluationConfig.from_yaml(args.eval_config, base_dir=PROJECT_ROOT)
@@ -176,7 +262,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         print("[info] Using pre-existing generation_answer columns (no agent call)")
 
-    result_df = evaluator.evaluate_dataframe(
+    new_df = evaluator.evaluate_dataframe(
         df,
         question_col=args.question_col,
         answer_col=args.answer_col,
@@ -185,10 +271,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     pbar.close()
 
-    out_path = args.output
-    if out_path is None:
-        out_path = args.input.with_name(args.input.stem + "_evaluated.csv")
-    out_path = Path(out_path)
+    if existing_df is not None and len(existing_df) > 0:
+        result_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        result_df = new_df
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Prefer core.Helper.Log if present, else plain write
@@ -197,7 +284,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         with Log.save_file(str(out_path)) as filename:
             result_df.to_csv(filename, index=False, quoting=1)
-        print(f"[info] Wrote enriched CSV → {out_path} (via Helper.Log)")
+        print(f"[info] Wrote enriched CSV → {out_path}")
     except Exception:
         result_df.to_csv(out_path, index=False, quoting=1)
         print(f"[info] Wrote enriched CSV → {out_path}")
@@ -262,11 +349,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 summary["metric_margin_means"][col] = float(
                     np.nanmean(result_df[moe_col])
                 )
-
-    summary_path = out_path.with_suffix(".summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, default=str)
-    print(f"[info] Wrote summary → {summary_path}")
 
     print("\n[summary] Metric means (± margin of error):")
     for name, val in summary["metric_means"].items():

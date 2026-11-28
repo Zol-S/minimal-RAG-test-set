@@ -43,7 +43,8 @@ from core.evaluator import OnTheFlyEvaluator, RowEvaluation
 
 # ---------------------------------------------------------------------------
 # Metric catalog for the sidebar checkboxes
-# (default_on=False only for context_precision and noise_sensitivity)
+# default_on is only a fallback when evaluation.yaml has no metrics block;
+# the UI initialises checkboxes from EvaluationConfig.metrics when available.
 # ---------------------------------------------------------------------------
 METRIC_CATALOG = [
     # (key, label, heavy_hint or None, default_on)
@@ -473,6 +474,23 @@ def main(questions_path: Optional[str] = None) -> None:
 
     call_agent = st.sidebar.checkbox("Call agent on-the-fly", value=True)
     limit = st.sidebar.number_input("Limit rows (0 = all)", min_value=0, value=0, step=1)
+    continue_eval = st.sidebar.checkbox(
+        "Continue from existing output",
+        value=False,
+        help=(
+            "If an output file with the same name as the input already exists "
+            "and has fewer rows, resume from the next missing row. "
+            "When set, Limit applies to the number of *new* rows to process."
+        ),
+    )
+    output_dir = st.sidebar.text_input(
+        "Output directory (optional)",
+        value="",
+        help=(
+            "Directory where the result CSV is written using the same filename "
+            "as the input. Leave empty to only offer a download button."
+        ),
+    )
     question_col = st.sidebar.text_input("Question column", value="question")
     answer_col = st.sidebar.text_input("Gold answer column", value="answer")
 
@@ -482,17 +500,23 @@ def main(questions_path: Optional[str] = None) -> None:
         st.sidebar.error(f"Could not load evaluation config: {e}")
         eval_cfg = None
 
-    # ---- Metric checkboxes (UI is source of truth) ----
+    # ---- Metric checkboxes (initialised from evaluation.yaml flags) ----
     st.sidebar.markdown("**Metrics**")
     st.sidebar.caption(
-        "Unchecked metrics are skipped. Labels marked *heavy* use more LLM / embedding calls."
+        "Unchecked metrics are skipped. Labels marked *heavy* use more LLM / embedding calls. "
+        "Defaults come from the metrics flags in evaluation.yaml."
     )
     selected_metrics: Dict[str, bool] = {}
     for key, label, hint, default_on in METRIC_CATALOG:
         display = label if not hint else f"{label}  ·  _{hint}_"
+        # Prefer the value from evaluation.yaml when available
+        if eval_cfg is not None and key in eval_cfg.metrics:
+            initial = bool(eval_cfg.metrics[key])
+        else:
+            initial = default_on
         selected_metrics[key] = st.sidebar.checkbox(
             display,
-            value=default_on,
+            value=initial,
             key=f"metric_cb_{key}",
         )
     if eval_cfg is not None:
@@ -528,15 +552,54 @@ def main(questions_path: Optional[str] = None) -> None:
             st.error("Fix agent / evaluation config paths first.")
             st.stop()
 
-        df_q = pd.read_csv(q_path)
-        if question_col not in df_q.columns:
+        input_path = Path(q_path)
+        df_full = pd.read_csv(input_path)
+        if question_col not in df_full.columns:
             st.error(f"Column '{question_col}' not found in CSV.")
             st.stop()
+
+        # Resolve output path (directory → same filename as input)
+        out_path: Optional[Path] = None
+        if output_dir and str(output_dir).strip():
+            out_dir = Path(output_dir.strip())
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / input_path.name
+
+        # Continue logic: resume from existing output if present and shorter
+        start_idx = 0
+        existing_df: Optional[pd.DataFrame] = None
+        if continue_eval and out_path is not None and out_path.exists():
+            try:
+                existing_df = pd.read_csv(out_path)
+                start_idx = len(existing_df)
+                if start_idx >= len(df_full):
+                    st.success(
+                        f"Output already complete ({start_idx} rows). Nothing to do."
+                    )
+                    st.session_state["live_results"] = existing_df
+                    st.stop()
+                st.info(
+                    f"Continuing from row {start_idx} "
+                    f"({len(df_full) - start_idx} remaining) …"
+                )
+            except Exception as e:
+                st.warning(f"Could not read existing output for continue: {e}")
+                existing_df = None
+                start_idx = 0
+
+        # Slice to process: from start_idx, optionally limited
+        df_q = df_full.iloc[start_idx:].copy()
         if limit and limit > 0:
             df_q = df_q.head(int(limit))
 
-        st.info(f"Evaluating {len(df_q)} questions …")
-        result_df = run_live_evaluation(
+        if len(df_q) == 0:
+            st.success("No new rows to process.")
+            if existing_df is not None:
+                st.session_state["live_results"] = existing_df
+            st.stop()
+
+        st.info(f"Evaluating {len(df_q)} questions (starting at input row {start_idx}) …")
+        new_df = run_live_evaluation(
             questions_df=df_q,
             agent_cfg=agent_cfg,
             eval_cfg=eval_cfg,
@@ -544,6 +607,19 @@ def main(questions_path: Optional[str] = None) -> None:
             question_col=question_col,
             answer_col=answer_col,
         )
+
+        if existing_df is not None and len(existing_df) > 0:
+            result_df = pd.concat([existing_df, new_df], ignore_index=True)
+        else:
+            result_df = new_df
+
+        if out_path is not None:
+            try:
+                result_df.to_csv(out_path, index=False, quoting=1)
+                st.success(f"Wrote results → {out_path}")
+            except Exception as e:
+                st.warning(f"Could not write output to {out_path}: {e}")
+
         st.session_state["live_results"] = result_df
 
     if st.session_state.get("live_results") is not None:
